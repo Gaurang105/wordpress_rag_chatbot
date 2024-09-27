@@ -8,9 +8,17 @@ from dotenv import load_dotenv
 import logging
 import pickle
 import json
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("utils.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -24,12 +32,13 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 # Initialize SentenceTransformer model
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def fetch_wordpress_posts(url, per_page=100):
     all_posts = []
     page = 1
     while True:
         try:
-            response = requests.get(f"{url}?per_page={per_page}&page={page}")
+            response = requests.get(f"{url}?per_page={per_page}&page={page}", timeout=10)
             if response.status_code == 400:
                 break
             response.raise_for_status()
@@ -40,7 +49,7 @@ def fetch_wordpress_posts(url, per_page=100):
             page += 1
         except requests.RequestException as e:
             logger.error(f"Error fetching posts: {str(e)}")
-            break
+            raise
     logger.info(f"Total posts fetched: {len(all_posts)}")
     return all_posts
 
@@ -112,6 +121,7 @@ def get_context(similar_ids, chunked_posts):
 def augment_query(query, context):
     return f"Context: {' '.join(context)}\n\nQuery: {query}"
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def query_claude(augmented_query):
     API_URL = 'https://api.anthropic.com/v1/messages'
     API_KEY = os.getenv('CLAUDE_API_KEY')
@@ -141,7 +151,7 @@ def query_claude(augmented_query):
     }
     
     try:
-        response = requests.post(API_URL, headers=headers, json=data)
+        response = requests.post(API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         
         response_data = response.json()
