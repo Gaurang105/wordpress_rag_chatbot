@@ -4,6 +4,14 @@
 
 This document outlines how to interact with the FastAPI-based backend for the Rajesh Jain blog chatbot from a PHP frontend. The backend provides a RESTful API that allows querying the chatbot with natural language questions.
 
+## To Run
+
+Go to backend folder: cd backend
+
+Then create a environment variable and activate the environment variable and then run this command: pip install -r requirements.txt
+
+Then write this command to start the server: python main.py
+
 ## Base URL
 
 The base URL for all API endpoints is:
