@@ -1,55 +1,95 @@
-# Rajesh Jain Chatbot API
+# Backend Usage Documentation for PHP Frontend
 
-This document provides information on how to interact with the Rajesh Jain chatbot backend API from PHP frontend.
+## Overview
 
-## API Endpoint
+This document outlines how to interact with the FastAPI-based backend for the Rajesh Jain blog chatbot from a PHP frontend. The backend provides a RESTful API that allows querying the chatbot with natural language questions.
 
-The base URL for the API is: `http://<your-server-ip>:<PORT>`
+## Base URL
 
-Replace `<your-server-ip>` with the actual IP address or domain name where the FastAPI server is running, and `<PORT>` with the port number specified in the environment variables (default is 8000).
+The base URL for all API endpoints is:
 
-## Available Endpoints
+```
+http://[your-server-ip]:8000
+```
+
+Replace `[your-server-ip]` with the actual IP address or domain name where the backend is hosted.
+
+## API Endpoints
 
 ### 1. Health Check
 
-- **URL:** `/health`
-- **Method:** GET
-- **Description:** Check if the server is up and running.
-- **Response:**
-  - Status 200 OK
-    ```json
-    {
-      "status": "ok"
-    }
-    ```
-  - Status 503 Service Unavailable
-    ```json
-    {
-      "detail": "Service is not ready"
-    }
-    ```
+- **Endpoint**: `/health`
+- **Method**: GET
+- **Description**: Check if the backend server is running and ready to accept requests.
+- **Response**: 
+  ```json
+  {
+    "status": "ok"
+  }
+  ```
 
 ### 2. Query the Chatbot
 
-- **URL:** `/query`
-- **Method:** POST
-- **Description:** Send a query to the chatbot and receive a response.
-- **Request Body:**
+- **Endpoint**: `/query`
+- **Method**: POST
+- **Description**: Send a question to the chatbot and receive a response.
+- **Request Body**:
   ```json
   {
     "query": "Your question here"
   }
   ```
-- **Response:**
-  - Status 200 OK
-    ```json
-    {
-      "response": "Chatbot's response here"
+- **Response**:
+  ```json
+  {
+    "response": "Chatbot's answer here"
+  }
+  ```
+
+## Using the API with PHP
+
+Here's an example of how to use the API from your PHP frontend:
+
+```php
+<?php
+
+function queryBackend($question) {
+    $url = 'http://[your-server-ip]:8000/query';
+    $data = array('query' => $question);
+
+    $options = array(
+        'http' => array(
+            'header'  => "Content-type: application/json\r\n",
+            'method'  => 'POST',
+            'content' => json_encode($data)
+        )
+    );
+
+    $context  = stream_context_create($options);
+    $result = file_get_contents($url, false, $context);
+
+    if ($result === FALSE) {
+        return "Error connecting to the backend.";
     }
-    ```
 
-## Usage
+    $response = json_decode($result, true);
+    return $response['response'];
+}
 
-To use this API, send HTTP requests to the appropriate endpoints as described above. Make sure to replace `<your-server-ip>` and `<PORT>` with the actual values for your server.
+// Example usage
+$question = "What does Rajesh Jain say about digital transformation?";
+$answer = queryBackend($question);
+echo $answer;
 
-For the query endpoint, send a POST request with a JSON body containing the "query" key and your question as the value.
+?>
+```
+
+## Error Handling
+
+The backend may return error responses in the following format:
+
+```json
+{
+  "error": "Error message here"
+}
+```
