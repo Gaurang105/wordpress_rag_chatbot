@@ -47,7 +47,7 @@ CHUNKED_POSTS_CACHE = os.path.join(CACHE_DIR, "chunked_posts.pkl")
 EMBEDDING_DIMENSION = 384 
 PINECONE_INDEX_NAME = "rajesh-jain-posts"
 
-@app.on_event("startup")
+# @app.on_event("startup")
 async def startup_event():
     global posts, chunked_posts, pinecone_index
     
