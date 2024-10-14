@@ -1,10 +1,12 @@
 import os
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
+import subprocess
+import sys
 from utils import (
     fetch_wordpress_posts,
     chunk_posts,
@@ -124,6 +126,14 @@ async def process_query(query: Query):
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+def restart_server():
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+@app.post("/restart")
+async def restart(background_tasks: BackgroundTasks):
+    background_tasks.add_task(restart_server)
+    return {"message": "Server restart initiated"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
