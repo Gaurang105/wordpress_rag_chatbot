@@ -134,7 +134,8 @@ def query_claude(augmented_query):
         "2. Separate distinct ideas into different paragraphs.\n"
         "3. Use headings or subheadings if appropriate.\n"
         "4. Ensure your response is well-organized and easy to read.\n"
-        "5. If providing a summary, clearly label it as such."
+        "5. If providing a summary, clearly label it as such.\n"
+        "6. Do not start your response with any introductory phrases like 'Based on the context provided'. Start directly with the answer."
     )
     
     data = {
