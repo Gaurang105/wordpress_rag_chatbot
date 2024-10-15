@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
-import subprocess
 import sys
 from utils import (
     fetch_wordpress_posts,
@@ -19,7 +18,8 @@ from utils import (
     save_data,
     load_data,
     batch_upsert,
-    model  
+    model,
+    posts_are_equal
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -57,47 +57,54 @@ async def startup_event():
         os.makedirs(CACHE_DIR)
 
     try:
-        # Document Collection
+        # Always fetch the latest posts
+        wordpress_url = "https://rajeshjain.com/wp-json/wp/v2/posts"
+        latest_posts = fetch_wordpress_posts(wordpress_url)
+        
+        if not latest_posts:
+            logger.error("No posts were fetched. Cannot proceed with startup.")
+            return
+
+        # Compare with cached posts and update if necessary
         if os.path.exists(POSTS_CACHE):
-            posts = load_data(POSTS_CACHE)
+            cached_posts = load_data(POSTS_CACHE)
+            new_posts = [post for post in latest_posts if not any(posts_are_equal(post, cached_post) for cached_post in cached_posts)]
+            if new_posts:
+                posts = cached_posts + new_posts
+                save_data(posts, POSTS_CACHE)
+                logger.info(f"Added {len(new_posts)} new posts to the cache.")
+            else:
+                posts = cached_posts
         else:
-            wordpress_url = "https://rajeshjain.com/wp-json/wp/v2/posts"
-            posts = fetch_wordpress_posts(wordpress_url)
-            if not posts:
-                logger.error("No posts were fetched. Cannot proceed with startup.")
-                return
+            posts = latest_posts
             save_data(posts, POSTS_CACHE)
 
-        # Document Chunking
-        if os.path.exists(CHUNKED_POSTS_CACHE):
-            chunked_posts = load_data(CHUNKED_POSTS_CACHE)
-        else:
-            chunked_posts = chunk_posts(posts)
-            save_data(chunked_posts, CHUNKED_POSTS_CACHE)
+        # Update chunked posts
+        chunked_posts = chunk_posts(posts)
+        save_data(chunked_posts, CHUNKED_POSTS_CACHE)
 
         # Create or connect to Pinecone index
         pinecone_index = create_pinecone_index(PINECONE_INDEX_NAME, EMBEDDING_DIMENSION)
 
-        # Check if the index needs to be populated
-        total_chunks = sum(len(post['chunks']) for post in chunked_posts)
-        index_stats = pinecone_index.describe_index_stats()
-        vectors_in_index = index_stats['total_vector_count']
-
-        if vectors_in_index < total_chunks:
-            vectors_to_upsert = []
-            for post in chunked_posts:
-                for i, chunk in enumerate(post['chunks']):
-                    vector_id = f"{post['id']}_{i}"
-                    if not pinecone_index.fetch(ids=[vector_id])['vectors']:
-                        vector = model.encode(chunk).tolist()
-                        vectors_to_upsert.append((vector_id, vector, {"text": chunk}))
-            
-            if vectors_to_upsert:
-                batch_upsert(pinecone_index, vectors_to_upsert)
+        # Update Pinecone index with new posts
+        update_pinecone_index(pinecone_index, chunked_posts)
 
         logger.info("Startup completed successfully")
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}", exc_info=True)
+
+def update_pinecone_index(index, chunked_posts):
+    vectors_to_upsert = []
+    for post in chunked_posts:
+        for i, chunk in enumerate(post['chunks']):
+            vector_id = f"{post['id']}_{i}"
+            if not index.fetch(ids=[vector_id])['vectors']:
+                vector = model.encode(chunk).tolist()
+                vectors_to_upsert.append((vector_id, vector, {"text": chunk}))
+    
+    if vectors_to_upsert:
+        batch_upsert(index, vectors_to_upsert)
+        logger.info(f"Upserted {len(vectors_to_upsert)} new vectors to Pinecone index")
 
 @app.get("/health")
 async def health_check():
@@ -132,8 +139,15 @@ def restart_server():
 
 @app.post("/restart")
 async def restart(background_tasks: BackgroundTasks):
+    # Clear the cache
+    if os.path.exists(POSTS_CACHE):
+        os.remove(POSTS_CACHE)
+    if os.path.exists(CHUNKED_POSTS_CACHE):
+        os.remove(CHUNKED_POSTS_CACHE)
+    
+    # Restart the server
     background_tasks.add_task(restart_server)
-    return {"message": "Server restart initiated"}
+    return {"message": "Server restart initiated. Cache cleared and full reload will be performed."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

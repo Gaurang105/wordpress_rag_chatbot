@@ -29,7 +29,7 @@ def fetch_wordpress_posts(url, per_page=100):
     page = 1
     while True:
         try:
-            response = requests.get(f"{url}?per_page={per_page}&page={page}")
+            response = requests.get(f"{url}?per_page={per_page}&page={page}&_fields=id,content,modified")
             if response.status_code == 400:
                 break
             response.raise_for_status()
@@ -43,6 +43,10 @@ def fetch_wordpress_posts(url, per_page=100):
             break
     logger.info(f"Total posts fetched: {len(all_posts)}")
     return all_posts
+
+def posts_are_equal(post1, post2):
+    """Compare two posts to check if they are the same."""
+    return post1['id'] == post2['id'] and post1['modified'] == post2['modified']
 
 def chunk_posts(posts, max_chunk_size=1000):
     chunked_posts = []
