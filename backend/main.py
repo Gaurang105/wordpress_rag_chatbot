@@ -134,20 +134,47 @@ async def process_query(query: Query):
         logger.error(f"Error processing query: {str(e)}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-def restart_server():
-    os.execv(sys.executable, ['python'] + sys.argv)
-
-@app.post("/restart")
-async def restart(background_tasks: BackgroundTasks):
-    # Clear the cache
-    if os.path.exists(POSTS_CACHE):
-        os.remove(POSTS_CACHE)
-    if os.path.exists(CHUNKED_POSTS_CACHE):
-        os.remove(CHUNKED_POSTS_CACHE)
+async def update_server():
+    global posts, chunked_posts, pinecone_index
     
-    # Restart the server
-    background_tasks.add_task(restart_server)
-    return {"message": "Server restart initiated. Cache cleared and full reload will be performed."}
+    try:
+        # Fetch the latest posts
+        wordpress_url = "https://rajeshjain.com/wp-json/wp/v2/posts"
+        latest_posts = fetch_wordpress_posts(wordpress_url)
+        
+        if not latest_posts:
+            logger.error("No posts were fetched. Cannot proceed with update.")
+            return
+
+        # Compare with cached posts and update if necessary
+        if os.path.exists(POSTS_CACHE):
+            cached_posts = load_data(POSTS_CACHE)
+            new_posts = [post for post in latest_posts if not any(posts_are_equal(post, cached_post) for cached_post in cached_posts)]
+            if new_posts:
+                posts = cached_posts + new_posts
+                save_data(posts, POSTS_CACHE)
+                logger.info(f"Added {len(new_posts)} new posts to the cache.")
+            else:
+                posts = cached_posts
+        else:
+            posts = latest_posts
+            save_data(posts, POSTS_CACHE)
+
+        # Update chunked posts
+        chunked_posts = chunk_posts(posts)
+        save_data(chunked_posts, CHUNKED_POSTS_CACHE)
+
+        # Update Pinecone index with new posts
+        update_pinecone_index(pinecone_index, chunked_posts)
+
+        logger.info("Server update completed successfully")
+    except Exception as e:
+        logger.error(f"Error during server update: {str(e)}", exc_info=True)
+
+@app.post("/update")
+async def update(background_tasks: BackgroundTasks):
+    background_tasks.add_task(update_server)
+    return {"message": "Server update initiated. New posts will be fetched and added to the index."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
