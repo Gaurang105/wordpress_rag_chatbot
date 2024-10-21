@@ -155,19 +155,28 @@ async def update_server():
                 save_data(posts, POSTS_CACHE)
                 logger.info(f"Added {len(new_posts)} new posts to the cache.")
             else:
-                posts = cached_posts
+                logger.info("No new posts found.")
+                return  # Exit if no new posts
         else:
-            posts = latest_posts
+            new_posts = latest_posts
+            posts = new_posts
             save_data(posts, POSTS_CACHE)
 
-        # Update chunked posts
-        chunked_posts = chunk_posts(posts)
+        # Only chunk and process new posts
+        new_chunked_posts = chunk_posts(new_posts)
+        
+        # Update chunked_posts in memory and cache
+        if os.path.exists(CHUNKED_POSTS_CACHE):
+            existing_chunked_posts = load_data(CHUNKED_POSTS_CACHE)
+            chunked_posts = existing_chunked_posts + new_chunked_posts
+        else:
+            chunked_posts = new_chunked_posts
         save_data(chunked_posts, CHUNKED_POSTS_CACHE)
 
-        # Update Pinecone index with new posts
-        update_pinecone_index(pinecone_index, chunked_posts)
+        # Update Pinecone index with only the new posts
+        update_pinecone_index(pinecone_index, new_chunked_posts)
 
-        logger.info("Server update completed successfully")
+        logger.info(f"Server update completed successfully. Processed {len(new_posts)} new posts.")
     except Exception as e:
         logger.error(f"Error during server update: {str(e)}", exc_info=True)
 
