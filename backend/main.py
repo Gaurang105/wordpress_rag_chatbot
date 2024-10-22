@@ -52,42 +52,42 @@ PINECONE_INDEX_NAME = "rajesh-jain-posts"
 @app.on_event("startup")
 async def startup_event():
     global posts, chunked_posts, pinecone_index
-    
+
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
 
     try:
-        # Always fetch the latest posts
         wordpress_url = "https://rajeshjain.com/wp-json/wp/v2/posts"
         latest_posts = fetch_wordpress_posts(wordpress_url)
-        
+
         if not latest_posts:
             logger.error("No posts were fetched. Cannot proceed with startup.")
             return
 
-        # Compare with cached posts and update if necessary
-        if os.path.exists(POSTS_CACHE):
-            cached_posts = load_data(POSTS_CACHE)
-            new_posts = [post for post in latest_posts if not any(posts_are_equal(post, cached_post) for cached_post in cached_posts)]
-            if new_posts:
-                posts = cached_posts + new_posts
-                save_data(posts, POSTS_CACHE)
-                logger.info(f"Added {len(new_posts)} new posts to the cache.")
-            else:
-                posts = cached_posts
+        cached_posts = load_data(POSTS_CACHE) if os.path.exists(POSTS_CACHE) else []
+        existing_chunked_posts = load_data(CHUNKED_POSTS_CACHE) if os.path.exists(CHUNKED_POSTS_CACHE) else []
+
+        new_or_updated_posts = [
+            post for post in latest_posts
+            if not any(posts_are_equal(post, cached_post) for cached_post in cached_posts)
+        ]
+
+        if not new_or_updated_posts:
+            logger.info("No new or modified posts found. Skipping unnecessary work.")
         else:
-            posts = latest_posts
+            posts = cached_posts + new_or_updated_posts
             save_data(posts, POSTS_CACHE)
 
-        # Update chunked posts
-        chunked_posts = chunk_posts(posts)
-        save_data(chunked_posts, CHUNKED_POSTS_CACHE)
+            new_chunked_posts = chunk_posts(new_or_updated_posts)
+            chunked_posts = existing_chunked_posts + new_chunked_posts
+            save_data(chunked_posts, CHUNKED_POSTS_CACHE)
 
-        # Create or connect to Pinecone index
+            logger.info(f"Processed {len(new_or_updated_posts)} new/updated posts.")
+
         pinecone_index = create_pinecone_index(PINECONE_INDEX_NAME, EMBEDDING_DIMENSION)
 
-        # Update Pinecone index with new posts
-        update_pinecone_index(pinecone_index, chunked_posts)
+        if new_or_updated_posts:
+            update_pinecone_index(pinecone_index, new_chunked_posts)
 
         logger.info("Startup completed successfully")
     except Exception as e:
@@ -138,7 +138,6 @@ async def update_server():
     global posts, chunked_posts, pinecone_index
     
     try:
-        # Fetch the latest posts
         wordpress_url = "https://rajeshjain.com/wp-json/wp/v2/posts"
         latest_posts = fetch_wordpress_posts(wordpress_url)
         
@@ -156,7 +155,7 @@ async def update_server():
                 logger.info(f"Added {len(new_posts)} new posts to the cache.")
             else:
                 logger.info("No new posts found.")
-                return  # Exit if no new posts
+                return
         else:
             new_posts = latest_posts
             posts = new_posts
