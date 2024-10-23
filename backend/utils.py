@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import logging
 import pickle
 import json
+from datetime import datetime
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -113,10 +115,18 @@ def get_context(similar_ids, chunked_posts):
                 break
     return context
 
-def augment_query(query, context):
-    return f"Context: {' '.join(context)}\n\nQuery: {query}"
+def augment_query(query, context, conversation_history):
+    # Format previous conversation
+    conversation_context = ""
+    if conversation_history:
+        conversation_context = "\nPrevious conversation:\n" + "\n".join([
+            f"User: {msg['content']}" if msg['role'] == 'user' else f"Assistant: {msg['content']}"
+            for msg in conversation_history[-4:]  # Include last 2 exchanges (4 messages)
+        ])
+    
+    return f"Context from blog posts: {' '.join(context)}{conversation_context}\n\nCurrent query: {query}"
 
-def query_claude(augmented_query):
+def query_claude(augmented_query, conversation_history):
     API_URL = 'https://api.anthropic.com/v1/messages'
     API_KEY = os.getenv('CLAUDE_API_KEY')
 
@@ -130,27 +140,43 @@ def query_claude(augmented_query):
     }
     
     system_message = (
-        "You are an AI assistant answering questions strictly based on the context provided from Rajesh Jain's blog posts.\n\n"
-        "### Rules for Response:\n"
-        "1. **If the answer isn't present in the provided context, respond:** 'I don't have enough information to answer that question.'\n"
-        "2. **Avoid any introductory phrases.** Start directly with the answer or key points.\n"
-        "3. Do not introduce or assume external information beyond the context given.\n\n"
-        "### Formatting Guidelines:\n"
-        "- Use bullet points or numbered lists if necessary for clarity.\n"
-        "- Divide different ideas into distinct paragraphs.\n"
-        "- Include subheadings where appropriate.\n"
-        "- Label summaries as 'Summary' if summarizing.\n"
-        "- Be concise, clear, and structured."
+        "You are a knowledgeable and friendly AI assistant having a natural conversation about Rajesh Jain based on his blog posts. "
+        "Your goal is to make the conversation feel human and engaging.\n\n"
+        "### Core Guidelines:\n"
+        "1. Be concise by default. Only provide detailed information when specifically asked.\n"
+        "2. Never start responses with phrases like 'Based on the context' or 'According to'. Jump straight into the answer.\n"
+        "3. Use a warm, conversational tone while maintaining accuracy.\n"
+        "4. If you don't have enough information, simply say 'I don't have enough information about that.'\n\n"
+        "### Response Style:\n"
+        "- Keep initial responses brief (1-2 sentences) unless asked for more detail\n"
+        "- Use natural language rather than bullet points unless specifically requested\n"
+        "- Make smooth references to previous conversation points when relevant\n"
+        "- Avoid formal or academic tones - think friendly conversation\n\n"
+        "### Examples:\n"
+        "❌ 'Based on the context, Rajesh Jain is the founder of...'\n"
+        "✅ 'Rajesh Jain is the founder of...'\n\n"
+        "❌ 'The available information indicates that...'\n"
+        "✅ 'He started the company in...'\n\n"
+        "❌ Long detailed response for a simple question\n"
+        "✅ Short, direct answer unless more detail is requested"
     )
+
+    messages = []
+    if conversation_history:
+        for msg in conversation_history[-4:]:
+            messages.append({
+                'role': msg['role'],
+                'content': msg['content']
+            })
+    
+    messages.append({'role': 'user', 'content': augmented_query})
     
     data = {
         'model': 'claude-3-sonnet-20240229',
         'system': system_message,
-        'messages': [
-            {'role': 'user', 'content': augmented_query}
-        ],
+        'messages': messages,
         'max_tokens': 1000,
-        'temperature': 0.3 # Factual Response Bias
+        'temperature': 0.3
     }
     
     try:
@@ -166,11 +192,87 @@ def query_claude(augmented_query):
     except Exception as e:
         logger.error(f"Error querying Claude API: {str(e)}")
         raise
-    
+
 def save_data(data, filename):
-    with open(filename, 'wb') as f:
-        pickle.dump(data, f)
+    """Save data to a pickle file with error handling."""
+    try:
+        with open(filename, 'wb') as f:
+            pickle.dump(data, f)
+        logger.info(f"Successfully saved data to {filename}")
+    except Exception as e:
+        logger.error(f"Error saving data to {filename}: {str(e)}")
+        raise
 
 def load_data(filename):
-    with open(filename, 'rb') as f:
-        return pickle.load(f)
+    """Load data from a pickle file with error handling."""
+    try:
+        with open(filename, 'rb') as f:
+            data = pickle.load(f)
+        logger.info(f"Successfully loaded data from {filename}")
+        return data
+    except Exception as e:
+        logger.error(f"Error loading data from {filename}: {str(e)}")
+        raise
+
+def clean_old_conversations(conversations, max_age_hours=24):
+    """Clean up old conversations to prevent memory bloat."""
+    current_time = datetime.now()
+    return {
+        conv_id: conv_data 
+        for conv_id, conv_data in conversations.items() 
+        if (current_time - conv_data['timestamp']).total_seconds() < max_age_hours * 3600
+    }
+
+def format_conversation_for_context(conversation_history, max_turns=2):
+    """Format conversation history for context inclusion."""
+    if not conversation_history:
+        return ""
+    relevant_history = conversation_history[-max_turns*2:]
+    formatted_history = []
+    for msg in relevant_history:
+        role_prefix = "User: " if msg['role'] == 'user' else "Assistant: "
+        formatted_history.append(f"{role_prefix}{msg['content']}")
+    return "\n".join(formatted_history)
+
+def sanitize_text(text):
+    """Clean and sanitize text content."""
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    text = re.sub(r'[^\w\s.,!?-]', '', text)
+
+    text = ' '.join(text.split())
+    
+    return text.strip()
+
+def truncate_context(context, max_length=8000):
+    """Truncate context to prevent exceeding API limits."""
+    if len(context) <= max_length:
+        return context
+    sentences = sent_tokenize(context)
+    
+    truncated = []
+    current_length = 0
+    
+    for sentence in sentences:
+        if current_length + len(sentence) + 1 <= max_length:
+            truncated.append(sentence)
+            current_length += len(sentence) + 1
+        else:
+            break
+    
+    return ' '.join(truncated)
+
+def handle_api_error(response):
+    """Handle API error responses."""
+    try:
+        error_data = response.json()
+        error_message = error_data.get('error', {}).get('message', 'Unknown error')
+        error_type = error_data.get('error', {}).get('type', 'UnknownError')
+        
+        logger.error(f"API Error: {error_type} - {error_message}")
+        return f"Error: {error_message}"
+    except Exception as e:
+        logger.error(f"Error parsing API error response: {str(e)}")
+        return "An unexpected error occurred"

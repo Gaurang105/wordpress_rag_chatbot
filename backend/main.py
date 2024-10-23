@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -39,6 +40,7 @@ app.add_middleware(
 posts = []
 chunked_posts = []
 pinecone_index = None
+conversations = {}  # Store conversation history
 
 # Cache file paths
 CACHE_DIR = "cache"
@@ -74,6 +76,8 @@ async def startup_event():
 
         if not new_or_updated_posts:
             logger.info("No new or modified posts found. Skipping unnecessary work.")
+            posts = cached_posts
+            chunked_posts = existing_chunked_posts
         else:
             posts = cached_posts + new_or_updated_posts
             save_data(posts, POSTS_CACHE)
@@ -112,24 +116,53 @@ async def health_check():
 
 class Query(BaseModel):
     query: str
+    conversation_id: str | None = None
 
 @app.post("/query")
 async def process_query(query: Query):
     if not pinecone_index:
         return JSONResponse(status_code=500, content={"error": "Server is not ready. Please try again later."})
+    
     try:
+        # Generate or retrieve conversation ID
+        conversation_id = query.conversation_id or str(uuid.uuid4())
+        
+        # Initialize conversation history if new
+        if conversation_id not in conversations:
+            conversations[conversation_id] = []
+        
         query_vector = embed_query(query.query)
         similar_ids = similarity_search(query_vector, pinecone_index)
         context = get_context(similar_ids, chunked_posts)
-        augmented_query = augment_query(query.query, context)
+        augmented_query = augment_query(query.query, context, conversations[conversation_id])
         
         try:
-            response = query_claude(augmented_query)
+            response = query_claude(augmented_query, conversations[conversation_id])
+            
+            # Store the interaction in conversation history
+            conversations[conversation_id].append({
+                "role": "user",
+                "content": query.query
+            })
+            conversations[conversation_id].append({
+                "role": "assistant",
+                "content": response
+            })
+            
+            # Prune old conversations (optional)
+            if len(conversations) > 1000:  # Limit total conversations
+                oldest_id = min(conversations.keys(), key=lambda k: conversations[k][0]["timestamp"])
+                del conversations[oldest_id]
+            
+            return JSONResponse(content={
+                "response": response,
+                "conversation_id": conversation_id
+            })
+            
         except ValueError as e:
             logger.error(f"Error querying Claude API: {str(e)}")
             return JSONResponse(status_code=500, content={"error": f"Error querying AI model: {str(e)}"})
         
-        return JSONResponse(content={"response": response})
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -145,7 +178,6 @@ async def update_server():
             logger.error("No posts were fetched. Cannot proceed with update.")
             return
 
-        # Compare with cached posts and update if necessary
         if os.path.exists(POSTS_CACHE):
             cached_posts = load_data(POSTS_CACHE)
             new_posts = [post for post in latest_posts if not any(posts_are_equal(post, cached_post) for cached_post in cached_posts)]
@@ -161,10 +193,8 @@ async def update_server():
             posts = new_posts
             save_data(posts, POSTS_CACHE)
 
-        # Only chunk and process new posts
         new_chunked_posts = chunk_posts(new_posts)
         
-        # Update chunked_posts in memory and cache
         if os.path.exists(CHUNKED_POSTS_CACHE):
             existing_chunked_posts = load_data(CHUNKED_POSTS_CACHE)
             chunked_posts = existing_chunked_posts + new_chunked_posts
@@ -172,7 +202,6 @@ async def update_server():
             chunked_posts = new_chunked_posts
         save_data(chunked_posts, CHUNKED_POSTS_CACHE)
 
-        # Update Pinecone index with only the new posts
         update_pinecone_index(pinecone_index, new_chunked_posts)
 
         logger.info(f"Server update completed successfully. Processed {len(new_posts)} new posts.")
